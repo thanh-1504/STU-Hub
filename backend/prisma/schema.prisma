@@ -1,0 +1,545 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  STUDENT
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  PENDING // đã đăng ký, chưa xác minh OTP
+  ACTIVE
+  LOCKED
+}
+
+enum OtpPurpose {
+  REGISTER
+  RESET_PASSWORD
+}
+
+enum SubjectType {
+  GENERAL // môn chung (đại cương), dùng cho mọi khoa
+  SPECIALIZED // môn chuyên ngành
+}
+
+enum DocumentType {
+  EXAM // đề thi cũ
+  MATERIAL // tài liệu môn học (PDF/DOCX)
+  SLIDE // slide bài giảng (PPTX)
+  LAB // bài thực hành
+}
+
+enum ExamKind {
+  MIDTERM
+  FINAL
+  OTHER // kiểm tra 15 phút, 1 tiết...
+}
+
+enum FileFormat {
+  PDF
+  DOCX
+  PPTX
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REMOVED // bị gỡ sau khi đã duyệt (báo cáo vi phạm, yêu cầu bản quyền)
+}
+
+enum PreviewStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum AttachmentKind {
+  ANSWER_FILE // file đáp án của đề thi
+  SOURCE_CODE // source code của bài Lab
+  OTHER
+}
+
+enum SolutionKind {
+  ANSWER // đáp án
+  GUIDE // hướng dẫn giải từng bước
+}
+
+enum ContentStatus {
+  VISIBLE
+  REMOVED
+}
+
+enum QuizStatus {
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum ReportTarget {
+  DOCUMENT
+  SOLUTION
+  COMMENT
+  QUESTION
+}
+
+enum ReportReason {
+  WRONG_CONTENT
+  SPAM
+  COPYRIGHT
+  PERSONAL_INFO
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+enum ModerationAction {
+  APPROVE_DOCUMENT
+  REJECT_DOCUMENT
+  REMOVE_DOCUMENT
+  APPROVE_SOLUTION
+  REJECT_SOLUTION
+  REMOVE_SOLUTION
+  REMOVE_COMMENT
+  EDIT_QUESTION
+  HIDE_QUESTION
+  RESOLVE_REPORT
+  LOCK_USER
+  UNLOCK_USER
+  APPOINT_ADMIN
+  REVOKE_ADMIN
+  BULK_IMPORT
+}
+
+enum NotificationType {
+  DOCUMENT_APPROVED
+  DOCUMENT_REJECTED
+  SOLUTION_APPROVED
+  SOLUTION_REJECTED
+  COMMENT_REPLY
+  SOLUTION_UPVOTED
+}
+
+// ---------------------------------------------------------------------
+// AUTH
+// ---------------------------------------------------------------------
+
+model User {
+  id              String     @id @default(uuid())
+  email           String     @unique
+  password        String
+  fullName        String
+  avatarUrl       String?
+  role            Role       @default(STUDENT)
+  status          UserStatus @default(PENDING)
+  departmentId    String?
+  emailVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  department        Department?    @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  otpCodes          OtpCode[]
+  refreshTokens     RefreshToken[]
+  documents         Document[]     @relation("DocumentUploader")
+  reviewedDocuments Document[]     @relation("DocumentReviewer")
+  solutions         Solution[]     @relation("SolutionAuthor")
+  reviewedSolutions Solution[]     @relation("SolutionReviewer")
+  solutionVotes     SolutionVote[]
+  comments          Comment[]
+  quizzesCreated    Quiz[]
+  quizAttempts      QuizAttempt[]
+  reportsFiled      Report[]       @relation("ReportReporter")
+  reportsHandled    Report[]       @relation("ReportHandler")
+  moderationLogs    ModerationLog[]
+  notifications     Notification[]
+  bookmarks         Bookmark[]
+
+  @@index([role, status])
+  @@map("users")
+}
+
+model OtpCode {
+  id             String     @id @default(uuid())
+  userId         String
+  purpose        OtpPurpose
+  codeHash       String // lưu hash của mã 6 số, không lưu mã gốc
+  expiresAt      DateTime
+  failedAttempts Int        @default(0) // giới hạn số lần nhập sai
+  consumedAt     DateTime?
+  createdAt      DateTime   @default(now()) // dùng để giới hạn số lần gửi lại
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose, createdAt])
+  @@map("otp_codes")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------
+// DANH MỤC: KHOA — MÔN HỌC
+// ---------------------------------------------------------------------
+
+model Department {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  slug        String  @unique
+  description String?
+  sortOrder   Int     @default(0)
+
+  users    User[]
+  subjects DepartmentSubject[]
+
+  @@map("departments")
+}
+
+model Subject {
+  id         String      @id @default(uuid())
+  code       String      @unique // mã môn
+  name       String
+  credits    Int?
+  type       SubjectType @default(SPECIALIZED)
+  hasLab     Boolean     @default(false)
+  searchText String // tên + mã môn, chữ thường, đã bỏ dấu (BE tạo khi lưu)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  departments DepartmentSubject[]
+  documents   Document[]
+  bookmarks   Bookmark[]
+
+  @@index([type])
+  @@map("subjects")
+}
+
+// Môn chuyên ngành thuộc khoa nào và học năm mấy.
+// Môn GENERAL không bắt buộc có dòng ở đây: truy vấn khoa = môn GENERAL + môn trong bảng này.
+model DepartmentSubject {
+  departmentId String
+  subjectId    String
+  studyYear    Int? // năm học gợi ý (1–4)
+
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  subject    Subject    @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@id([departmentId, subjectId])
+  @@index([subjectId])
+  @@map("department_subjects")
+}
+
+// ---------------------------------------------------------------------
+// TÀI LIỆU
+// ---------------------------------------------------------------------
+
+model Document {
+  id           String       @id @default(uuid())
+  title        String
+  description  String?      @db.Text
+  type         DocumentType
+  examKind     ExamKind? // chỉ dùng khi type = EXAM
+  academicYear String? // ví dụ "2023-2024"
+  semester     Int? // 1, 2, 3 (hè)
+  subjectId    String
+  uploaderId   String
+
+  // Kiểm duyệt
+  status       ReviewStatus @default(PENDING)
+  rejectReason String?
+  reviewedById String?
+  reviewedAt   DateTime?
+
+  // File gốc (lưu trên object storage, DB chỉ giữ đường dẫn)
+  format   FileFormat
+  fileKey  String
+  fileName String
+  fileSize Int
+  mimeType String
+  fileHash String     @unique // SHA-256, chặn tải trùng
+  pageCount Int? // số trang hoặc số slide
+
+  // Bản xem trước (PDF hoặc ảnh sau khi chuyển; với file PDF có thể dùng chính fileKey)
+  previewKey    String?
+  previewStatus PreviewStatus @default(PENDING)
+
+  isScanned Boolean @default(false) // file ảnh scan, chưa tạo được quiz
+  hasAnswer Boolean @default(false) // phục vụ bộ lọc "Có đáp án"
+
+  viewCount     Int @default(0)
+  downloadCount Int @default(0)
+
+  searchText String // tiêu đề + tên/mã môn, chữ thường, bỏ dấu (BE tạo khi lưu)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subject     Subject      @relation(fields: [subjectId], references: [id])
+  uploader    User         @relation("DocumentUploader", fields: [uploaderId], references: [id])
+  reviewer    User?        @relation("DocumentReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  attachments Attachment[]
+  solutions   Solution[]
+  comments    Comment[]
+  quizzes     Quiz[]
+  bookmarks   Bookmark[]
+
+  @@index([subjectId, status, type])
+  @@index([uploaderId, status])
+  @@index([status, createdAt])
+  @@index([academicYear, semester])
+  @@map("documents")
+}
+
+model Attachment {
+  id         String         @id @default(uuid())
+  documentId String
+  kind       AttachmentKind
+  fileKey    String
+  fileName   String
+  fileSize   Int
+  mimeType   String
+  createdAt  DateTime       @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@map("attachments")
+}
+
+// ---------------------------------------------------------------------
+// LỜI GIẢI, BÌNH LUẬN
+// ---------------------------------------------------------------------
+
+model Solution {
+  id           String       @id @default(uuid())
+  documentId   String
+  authorId     String
+  kind         SolutionKind @default(ANSWER)
+  content      String       @db.Text // Markdown: văn bản, các bước, code block
+  status       ReviewStatus @default(PENDING)
+  rejectReason String?
+  reviewedById String?
+  reviewedAt   DateTime?
+  isBest       Boolean      @default(false)
+  score        Int          @default(0) // tổng điểm vote, cập nhật khi có vote
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  document Document       @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  author   User           @relation("SolutionAuthor", fields: [authorId], references: [id])
+  reviewer User?          @relation("SolutionReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  votes    SolutionVote[]
+  comments Comment[]
+
+  @@index([documentId, status, score])
+  @@index([authorId])
+  @@map("solutions")
+}
+
+model SolutionVote {
+  solutionId String
+  userId     String
+  value      Int // 1 hoặc -1 (ràng buộc CHECK thêm trong migration)
+  createdAt  DateTime @default(now())
+
+  solution Solution @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([solutionId, userId]) // mỗi người một phiếu cho mỗi lời giải
+  @@map("solution_votes")
+}
+
+model Comment {
+  id          String        @id @default(uuid())
+  authorId    String
+  documentId  String? // đúng một trong documentId, solutionId (CHECK trong migration)
+  solutionId  String?
+  parentId    String? // trả lời một cấp
+  slideNumber Int? // bình luận gắn vào slide cụ thể (PPTX)
+  content     String        @db.Text
+  status      ContentStatus @default(VISIBLE)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  author   User      @relation(fields: [authorId], references: [id])
+  document Document? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  solution Solution? @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies  Comment[] @relation("CommentReplies")
+
+  @@index([documentId, createdAt])
+  @@index([solutionId, createdAt])
+  @@index([parentId])
+  @@map("comments")
+}
+
+// ---------------------------------------------------------------------
+// QUIZ AI
+// Giới hạn 6 lượt/ngày: đếm số dòng Quiz do người dùng tạo trong ngày
+// (dùng lại bộ có sẵn thì không tạo dòng mới nên không tính lượt).
+// ---------------------------------------------------------------------
+
+model Quiz {
+  id            String     @id @default(uuid())
+  documentId    String
+  createdById   String
+  rangeKey      String     @default("all") // "all" hoặc khoảng trang/slide, ví dụ "1-20"
+  questionCount Int        @default(0)
+  status        QuizStatus @default(PROCESSING)
+  errorMessage  String?
+  modelName     String? // tên mô hình đã dùng để sinh
+  createdAt     DateTime   @default(now())
+
+  document  Document      @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdBy User          @relation(fields: [createdById], references: [id])
+  questions Question[]
+  attempts  QuizAttempt[]
+
+  @@unique([documentId, rangeKey]) // một bộ cho mỗi tài liệu và khoảng nội dung, dùng chung cho mọi người
+  @@index([createdById, createdAt])
+  @@map("quizzes")
+}
+
+model Question {
+  id           String  @id @default(uuid())
+  quizId       String
+  orderIndex   Int
+  content      String  @db.Text // có thể chứa code
+  options      String[] // 4 lựa chọn
+  correctIndex Int // vị trí đáp án đúng trong options (0–3)
+  explanation  String? @db.Text
+  reportCount  Int     @default(0)
+  isHidden     Boolean @default(false) // tạm ẩn khi bị báo sai nhiều lần
+
+  quiz Quiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  @@index([quizId, orderIndex])
+  @@map("questions")
+}
+
+model QuizAttempt {
+  id             String    @id @default(uuid())
+  quizId         String
+  userId         String
+  score          Int
+  totalQuestions Int
+  durationSec    Int?
+  answers        Json // { "<questionId>": <chỉ số đã chọn> }
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+
+  quiz Quiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, quizId])
+  @@map("quiz_attempts")
+}
+
+// ---------------------------------------------------------------------
+// KIỂM DUYỆT
+// ---------------------------------------------------------------------
+
+model Report {
+  id             String       @id @default(uuid())
+  reporterId     String
+  targetType     ReportTarget
+  targetId       String // id của đối tượng bị báo cáo (không có khóa ngoại vì nhiều bảng)
+  reason         ReportReason
+  detail         String?
+  status         ReportStatus @default(OPEN)
+  handledById    String?
+  handledAt      DateTime?
+  resolutionNote String?
+  createdAt      DateTime     @default(now())
+
+  reporter User  @relation("ReportReporter", fields: [reporterId], references: [id])
+  handler  User? @relation("ReportHandler", fields: [handledById], references: [id], onDelete: SetNull)
+
+  @@unique([reporterId, targetType, targetId]) // một người chỉ báo cáo một đối tượng một lần
+  @@index([status, createdAt])
+  @@index([targetType, targetId])
+  @@map("reports")
+}
+
+model ModerationLog {
+  id         String           @id @default(uuid())
+  actorId    String
+  action     ModerationAction
+  targetType String?
+  targetId   String?
+  note       String?
+  metadata   Json?
+  createdAt  DateTime         @default(now())
+
+  actor User @relation(fields: [actorId], references: [id])
+
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
+  @@map("moderation_logs")
+}
+
+// ---------------------------------------------------------------------
+// MỞ RỘNG (làm sau MVP)
+// ---------------------------------------------------------------------
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String?
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model Bookmark {
+  id         String   @id @default(uuid())
+  userId     String
+  documentId String? // đúng một trong documentId, subjectId (CHECK trong migration)
+  subjectId  String?
+  createdAt  DateTime @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document Document? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  subject  Subject?  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, documentId])
+  @@unique([userId, subjectId])
+  @@map("bookmarks")
+}
