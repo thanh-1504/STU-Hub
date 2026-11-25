@@ -1,1 +1,5 @@
 @import "tailwindcss";
+
+@theme {
+  --color-primary-auth: #e3f6fd;
+}
